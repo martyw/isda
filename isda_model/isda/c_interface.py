@@ -5,7 +5,7 @@ import pathlib
 class CInterface:
 
     def __init__(self):
-       dll = (pathlib.Path(__file__).parent).joinpath('ISDA_Clib.dll')
+       dll = str((pathlib.Path(__file__).parent).joinpath('ISDA_Clib.dll'))
        if os.path.isfile(dll):
            self.dll = CDLL(dll)
        else:
