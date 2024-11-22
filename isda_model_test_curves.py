@@ -45,8 +45,7 @@ class Curve:
         self.object_name = object_name
         self.value_date = value_date
         self.tenors = tenors
-        if bad_day_convention not in ("N", "M", "F"):
-            raise ValueError(f"Bad Bad Day Convention {bad_day_convention}, expected N, M, or F")
+        assert bad_day_convention in ("N", "M", "F")
         self.bad_day_convention = ord(bad_day_convention)
         self.holidays = holidays
         self.result_curve = []
@@ -65,8 +64,8 @@ class Curve:
         
     def forward_date_calculation(self, from_date, term):
         from_date_jpmfmt = self.isda_dll.JpmcdsDate(from_date.year, from_date.month, from_date.day)
-        interval = self.convert_to_interval(term)
         dt = (ctypes.c_int * 1)()
+        interval = self.convert_to_interval(term)
         self.isda_dll.JpmcdsDateFwdThenAdjust(from_date_jpmfmt, interval, self.bad_day_convention, self.holidays, dt)
         
         return dt[0]
@@ -77,10 +76,16 @@ class Curve:
             
     def get_tenor_and_value(self, crv, i):
         _tenor = crv[0].fArray[i].fDate
-        tenor = datetime.strptime("".join([chr(j) for j in list(self.isda_dll.JpmcdsFormatDate(_tenor))]), "%Y%m%d")
+        tenor = self.convert_jpm_format_date(_tenor)
         curve_value = self.isda_dll.JpmcdsZeroPrice(crv, _tenor)
 
         return (tenor, curve_value)
+    
+    def convert_jpm_format_date(self, dt):
+        return datetime.strptime("".join([chr(j) for j in list(self.isda_dll.JpmcdsFormatDate(dt))]), "%Y%m%d")
+        
+    def convert_array(self, arg_type, array):
+        return (arg_type * len(array))(*array)
 
 class CreditCurve(Curve):
     def __init__(self, value_date, tenors, zero_curve, accrual_start_date, \
@@ -90,7 +95,7 @@ class CreditCurve(Curve):
         self.zero_curve = zero_curve[0]
         self.stepin_date = self.forward_date_calculation(value_date, "1D")
         self.cash_settle_date = self.forward_date_calculation(value_date, "3D")
-        self.cds_spreads = (ctypes.c_double * len(cds_spreads))(*cds_spreads)
+        self.cds_spreads = self.convert_array(ctypes.c_double, cds_spreads)
         self.recovery_rate = recovery_rate
         self.pay_accrual_on_default = pay_accrual_on_default
         self.coupon_interval = self.convert_to_interval(coupon_interval)
@@ -102,7 +107,7 @@ class CreditCurve(Curve):
     def build(self):
         # tenors
         jpm_imm_dates = [self.isda_dll.JpmcdsDate(dt.year, dt.month,dt.day) for (_, dt) in self.tenors]
-        tenors = (ctypes.c_int * len(jpm_imm_dates))(*jpm_imm_dates)
+        tenors = self.convert_array(ctypes.c_int, jpm_imm_dates)
         value_date_jpmfmt = self.isda_dll.JpmcdsDate(self.value_date.year,self.value_date.month, self.value_date.day)
         credit_curve = self.isda_dll.JpmcdsCleanSpreadCurve(value_date_jpmfmt, self.zero_curve, \
                                 value_date_jpmfmt, self.stepin_date, self.cash_settle_date, len(jpm_imm_dates),\
@@ -120,7 +125,7 @@ class IRZeroCurve(Curve):
     def __init__(self, value_date, instrument_types, tenors, rates, money_marketDCC, fixedleg_freq, floatleg_freq, fixedleg_dcc, floatleg_dcc, bad_day_convention, holidays):
         Curve.__init__(self,value_date, "BuildZeroCurve", tenors, bad_day_convention, holidays)
         self.instrument_types = "".join(instrument_types)
-        self.rates = (ctypes.c_double * len(rates))(*rates)
+        self.rates = self.convert_array(ctypes.c_double, rates)
         self.money_marketDCC = self.daycount_convention(money_marketDCC)
         self.fixedleg_freq = self.swapleg_frequency(fixedleg_freq)
         self.floatleg_freq = self.swapleg_frequency(floatleg_freq)
@@ -143,7 +148,7 @@ class IRZeroCurve(Curve):
         tenor_dates = []
         for tenor in self.tenors:
             tenor_dates.append(self.forward_date_calculation(self.value_date, tenor))
-        return (ctypes.c_int * len(tenor_dates))(*tenor_dates)
+        return self.convert_array(ctypes.c_int, tenor_dates)
     
     def set_result_curve(self, zero_curve):
         """add only points not on consecutive days"""
@@ -161,23 +166,20 @@ class IRZeroCurve(Curve):
         return "tenor,discount factor,YearFraction,Zero rate\n" + "\n".join([str(pt) for pt in self.result_curve])
 
     def swapleg_frequency(self, freq):
-        tmp = isda.c_interface.TDateInterval()
-        self.isda_dll.JpmcdsStringToDateInterval(freq, self.object_name, tmp)
+        interval = self.convert_to_interval(freq)
         freq_p = (ctypes.c_double * 1)()
-        self.isda_dll.JpmcdsDateIntervalToFreq(tmp, freq_p)
+        self.isda_dll.JpmcdsDateIntervalToFreq(interval, freq_p)
         
         return ctypes.c_long(int(freq_p[0]))
 
-class IRZeroCurveFromSpot(IRZeroCurve):
-        
+class IRZeroCurveFromSpot(IRZeroCurve):        
     def setup_tenors(self):
-        """ tenors to JPM format"""
+        """ tenors calculated from spot date (T+2)"""
         tenor_dates = []
-        spot_date = self.forward_date_calculation(self.value_date, "2D")
-        spot_date = datetime.strptime("".join([chr(j) for j in list(self.isda_dll.JpmcdsFormatDate(spot_date))]), "%Y%m%d")
+        spot_date = self.convert_jpm_format_date(self.forward_date_calculation(self.value_date, "2D"))
         for tenor in self.tenors:
             tenor_dates.append(self.forward_date_calculation(spot_date, tenor))
-        return (ctypes.c_int * len(tenor_dates))(*tenor_dates)
+        return self.convert_array(ctypes.c_int, tenor_dates)
                 
 
 if __name__ == "__main__":    
